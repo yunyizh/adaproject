@@ -1,0 +1,394 @@
+---
+title: "R Notebook"
+output:
+  word_document: default
+  html_notebook: default
+---
+Team Member: Hayoung Kim, Younhyuk Cho, Hyoungmook Song, Yunyi Zhang, Yang Fan, Haojiang Liu, Yang Fei, Yunlin Qin, Weitong Wang
+
+
+```{r}
+library(gridBase)
+library(grid)
+library(stringr)
+library(kohonen)
+library(gridBase)
+library(class)
+library(MASS)
+library(rpart)
+library(randomForest)
+library(glmnet)
+library(Matrix)
+library(foreach)
+library(ggplot2)
+library(reshape2)
+library(car)
+set.seed(100)
+```
+
+
+1.Introduction And Objective
+
+Audiences are often quite unsure which movie they should watch when they have some leisure time to step into the cinema. They are sometimes confused by the advertisements or marketing strategies and end up watching a movie that does not meet their expectation. An objective and rational recommendation system for upcoming movies based on the movie itself as well as audiences' own past preference is necessary in today's world. 
+
+Therefore, the objective of this project is to develop a system to recommend the upcoming movies based on the movie features along with audiences' previous favorite movie type. 
+
+2.Material And Method
+ 
+
+1)Data Source
+
+The data comses from: https://www.kaggle.com/deepmatrix/imdb-5000-movie-dataset. The dataset includes different features of more than 5000 movies as well as their current IMDb scores. The movie features include Duration, Genres, Budget, Actor Facebook Likes, Aspect Ratio, Director Facebook Likes, Content Rating, etc.
+
+2)Analytical Plans
+
+The following supervised methods are used to construct a rating prediction model using current IMDb score as refered response variable:
+- Multiple Linear Regression
+- Ridge Regression
+- Lasso Regression
+- Decision Tree
+- Random Forest
+
+Unsupervised clustering method is used to classify movies into six types. Movies in each type have similar features. 
+
+3.Analysis and Results
+
+1) Data Processing
+
+The following procedures are done for data processing. 
+- Delete data entries with missing values. Value of 0 is also considered missing because 0 is not a rational value in most of the variables. 
+- Develop categorical variables like "content-rating" and "aspect-ratio" into cleansed factor variables ready for analysis.
+- Transfer genre variables from form of "Action/Comedy/Family" into "1/0" factors for each of the 7 most popular genres. 
+
+```{r}
+movie.data.origin = read.csv("movie_metadata.csv", header = TRUE)
+```
+
+```{r}
+####data processing####
+#Delete data including NA
+movie.data = movie.data.origin[!(rowSums(is.na(movie.data.origin))),]
+
+#Delete data with every data with facebook_likes = 0, missing rate
+movie.data = subset(movie.data, country == "USA")
+movie.data = subset(movie.data, language == "English")
+movie.data = subset(movie.data, num_voted_users != 0)
+movie.data = subset(movie.data, num_user_for_reviews != 0)
+movie.data = subset(movie.data, num_critic_for_reviews != 0)
+movie.data = subset(movie.data, movie_facebook_likes != 0)
+movie.data = subset(movie.data, actor_1_facebook_likes != 0)
+movie.data = subset(movie.data, actor_2_facebook_likes != 0)
+movie.data = subset(movie.data, actor_3_facebook_likes != 0)
+movie.data = subset(movie.data, cast_total_facebook_likes != 0)
+movie.data = subset(movie.data, director_facebook_likes != 0)
+movie.data = subset(movie.data, content_rating != "")
+
+#transform some variables into factor values
+rownames(movie.data) = c(1:dim(movie.data)[1])
+movie.data$aspect_ratio = factor(movie.data$aspect_ratio)
+movie.data$content_rating = factor(movie.data$content_rating)
+movie.data$country = factor(movie.data$country)
+movie.data$language = factor(movie.data$language)
+
+#Number of genres for each movie
+movie.data = cbind(movie.data, num_genres = str_count(movie.data$genres, "/")+1)
+
+#Create a data frame consists of the variables that we are interested in
+movie_dat<-movie.data[,c(4,5,6,8,22,23,25,26,27,29)]
+#Transform content rating into numeric variables
+movie_dat$content_rating<-as.character(movie_dat$content_rating)
+movie_dat$content_rating[which(movie_dat$content_rating=="M")]<-"Other"
+movie_dat$content_rating[which(movie_dat$content_rating=="NC-17")]<-"Other"
+movie_dat$content_rating[which(movie_dat$content_rating=="Passed")]<-"Other"
+
+for (i in 1:length(unique(movie_dat$content_rating))) {
+  movie_dat$content_rating[which(movie_dat$content_rating==unique(movie_dat$content_rating)[i])]<-i
+}
+movie_dat$content_rating<-as.factor(movie_dat$content_rating)
+
+##Transform aspect_ratio into numeric variables
+movie_dat$aspect_ratio<-as.character(movie_dat$aspect_ratio)
+
+movie_dat$aspect_ratio[which(movie_dat$aspect_ratio=="1.5")]<-"Other"
+movie_dat$aspect_ratio[which(movie_dat$aspect_ratio=="1.75")]<-"Other"
+movie_dat$aspect_ratio[which(movie_dat$aspect_ratio=="1.77")]<-"Other"
+movie_dat$aspect_ratio[which(movie_dat$aspect_ratio=="2")]<-"Other"
+movie_dat$aspect_ratio[which(movie_dat$aspect_ratio=="2.24")]<-"Other"
+movie_dat$aspect_ratio[which(movie_dat$aspect_ratio=="2.55")]<-"Other"
+movie_dat$aspect_ratio[which(movie_dat$aspect_ratio=="2.4")]<-"Other"
+movie_dat$aspect_ratio[which(movie_dat$aspect_ratio=="2.76")]<-"Other"
+
+for (i in 1:length(unique(movie_dat$aspect_ratio))) {
+  movie_dat$aspect_ratio[which(movie_dat$aspect_ratio==unique(movie_dat$aspect_ratio)[i])]<-i
+}
+movie_dat$aspect_ratio<-as.factor(movie_dat$aspect_ratio)
+```
+
+
+```{r}
+###genre processing###
+genre<-matrix(0,dim(movie.data)[1],8)
+for (i in 1:dim(movie.data)[1]){
+a<-read.table(text=as.character(movie.data$genres[i]), sep = "/", as.is = TRUE)
+genre[i,1:length(a)]<-as.matrix(a)
+}
+table(as.character(genre))
+```
+
+```{r}
+genretype<-matrix(0,1308,7)
+for (i in 1:dim(movie.data)[1]){
+  genretype[i,1]<-any(genre[i,]=="Action")
+  genretype[i,2]<-any(genre[i,]=="Adventure")
+  genretype[i,3]<-any(genre[i,]=="Comedy")
+  genretype[i,4]<-any(genre[i,]=="Crime")
+  genretype[i,5]<-any(genre[i,]=="Drama")
+  genretype[i,6]<-any(genre[i,]=="Romance")
+  genretype[i,7]<-any(genre[i,]=="Thriller")
+}
+colnames(genretype)<-c("Action","Adventure","Comedy","Crime","Drama","Romance","Thriller")
+movie_dat2<-cbind(movie_dat,genretype)
+```
+
+2) Exploratory Data Analysis
+
+```{r}
+#######EDA on numerical variables 
+library(moments)
+options(scipen=999)
+eda<-matrix(0,8,6)
+eda<-data.frame(eda)
+colnames(eda)<-c("mean","sd","kurtosis","skewness","minimum","maximum")
+j=1
+for (i in c(1,2,4,7,3,6,10,8)){
+eda[j,1]<-mean(movie_dat[,i])
+eda[j,2]<-sd(movie_dat[,i])
+eda[j,3]<-kurtosis(movie_dat[,i])
+eda[j,4]<-skewness(movie_dat[,i])
+eda[j,5]<-range(movie_dat[,i])[1]
+eda[j,6]<-range(movie_dat[,i])[2]
+rownames(eda)[j]<-colnames(movie_dat)[i]
+j=j+1
+}
+eda<-round(eda,2)
+eda$sd<-round(eda$sd,0)
+eda$mean<-round(eda$mean,0)
+eda$minimum<-round(eda$minimum,0)
+eda
+write.csv(eda,file="eda.csv")
+plotset<-movie_dat[,c(1,2,4,7,3,6,10,8)]
+d<-melt(plotset)
+ggplot(d,aes(x=value))+
+  facet_wrap(~variable,scales = "free_x")+
+  geom_histogram(bins=50)
+cor<-cor(movie_dat[,c(1,2,4,7,3,6,10,8)])
+library(corrplot)
+corrplot(cor,order="FPC")
+```
+
+ 
+```{r}
+#divede sample into training sets and test sets
+sample_size<-floor(0.8*nrow(movie_dat2))
+train_index<-sample(seq_len(nrow(movie_dat2)),size = sample_size)
+train_data<-movie_dat2[train_index,]
+test_data<-movie_dat2[-train_index,]
+```
+
+```{r}
+#fit step-wise linear regression on training sets and predict on test sets
+ols_fit<-lm(imdb_score~.,data=train_data)
+summary(ols_fit)
+ols_pred<-predict(ols_fit,test_data[,-8])
+step<-stepAIC(ols_fit,direction = 'both',trace=0)
+summary(step)
+ols_step_pred<-predict(step,test_data[,-8])
+```
+
+```{r}
+train_data$content_rating<-as.numeric(train_data$content_rating)
+test_data$content_rating<-as.numeric(test_data$content_rating)
+ridge_cv_fit<-cv.glmnet(x=as.matrix(train_data[,-c(8,9)]),y=train_data[,8],alpha=0)
+ridge_fit<-glmnet(x=as.matrix(train_data[,-c(8,9)]),y=train_data[,8],alpha=0)
+op_ridge<-which(ridge_cv_fit$lambda==ridge_cv_fit$lambda.min)
+ridge_fit$beta[,op_ridge]
+r_pred<-predict(ridge_cv_fit,as.matrix(test_data[,-c(8,9)]))
+```
+
+```{r}
+lasso_cv_fit<-cv.glmnet(x=as.matrix(train_data[,-c(8,9)]),y=train_data[,8],alpha=1)
+lasso_fit<-glmnet(x=as.matrix(train_data[,-c(8,9)]),y=train_data[,8],alpha=1)
+op_lasso<-which(lasso_cv_fit$lambda==lasso_cv_fit$lambda.min)
+lasso_fit$beta[,op_lasso]
+la_pred<-predict(lasso_cv_fit,as.matrix(test_data[,-c(8,9)]))
+```
+
+
+```{r}
+mse_ridge<-mean((r_pred-test_data[,8])^2)
+mse_lasso<-mean((la_pred-test_data[,8])^2)
+mse_step_ols<-mean((ols_step_pred-test_data[,8])^2)
+mse_ols<-mean((ols_pred-test_data[,8])^2)
+```
+
+```{r}
+########### 4. Fit decision trees and random forest on data
+tree_movie<-rpart(imdb_score~.,data=train_data)
+library(rpart.plot)
+rpart.plot(tree_movie,main="Regression tree for IMDB score",col=blues9[5:9])
+y_pred_tree<-predict(tree_movie,test_data)
+mse_tree<-mean((y_pred_tree-test_data$imdb_score)^2)
+```
+
+```{r}
+K<-500
+out.vals<-mat.or.vec(262,K)
+out.list<-list(K)
+
+base.fit<-rpart(imdb_score~.,data=train_data)
+out.vals.base<-predict(base.fit,test_data)
+
+set.seed(1)
+for (i in 1:K){
+  inds<-sample(1:1046,1046,replace=TRUE)
+  df.temp<-train_data[inds,]
+  fit.temp<-rpart(imdb_score~.,data=df.temp)
+  out.list[[i]]<-fit.temp
+  out.vals[,i]<-predict(fit.temp,test_data)
+}
+
+#calculate the mean MSE of all bagging trees
+bag.mse.vec<-rep(0,262)
+for (i in 1:262){
+  bag.mse.vec[i]<-mean((out.vals[,i]-test_data$imdb_score)^2)
+}
+bag_mse<-mean(bag.mse.vec)
+rpart.plot(out.list[[6]],col=blues9[5:9])
+rpart.plot(out.list[[9]],col=blues9[5:9])
+#prp(out.list[[3]])
+#prp(out.list[[4]])
+```
+
+```{r}
+#use random forest on our data and calculate MSE
+rf_movie<-randomForest(imdb_score~.,data=train_data)
+y_pred_rf<-predict(rf_movie,test_data)
+mse_rf<-mean((y_pred_rf-test_data$imdb_score)^2)
+
+#show the importance of variables using random forest
+importance(rf_movie)
+imp<-importance(rf_movie)
+imp_sort<-sort(imp,decreasing=TRUE,index.return=TRUE)
+
+#draw a barplot to show the importance of the variables
+par(las=2)
+barplot(imp_sort$x,main="Importance Plot",horiz=TRUE,names.arg=rownames(imp)[imp_sort$ix],cex.names=0.35,col=blues9[5])
+```
+
+```{r}
+library(e1071)
+fit_svm_linear <-svm(imdb_score~.,data=train_data,kernel="linear")
+fit_svm_radial <-svm(imdb_score~.,data=train_data,kernel="radial")
+y_pred_svm_l<-predict(fit_svm_linear,newdata=test_data)
+y_pred_svm_r<-predict(fit_svm_radial,newdata=test_data)
+mse_svm_l<-mean((y_pred_svm_l-test_data$imdb_score)^2)
+mse_svm_r<-mean((y_pred_svm_r-test_data$imdb_score)^2)
+```
+
+```{r}
+print(c("mse_ols","mse_step_ols","mse_ridge","mse_lasso","mse_tree","bag_mse","mse_rf","mse_svm_l","mse_svm_r"))
+print(c(mse_ols,mse_step_ols,mse_ridge,mse_lasso,mse_tree,bag_mse,mse_rf,mse_svm_l,mse_svm_r))
+```
+
+```{r}
+################ 6. Use SOM to cluster data and show some features
+#use the subset of data and apply SOM 
+set.seed(10)
+movie.data$color<-as.numeric(movie.data$color)
+movie.data$color<-movie.data$color-2
+content_rating<-as.numeric(movie_dat$content_rating)
+aspect_ratio<-as.numeric(movie_dat$aspect_ratio)
+target.movie.data.som =cbind(movie.data[,c(1,4,5,8,14,23,29)],content_rating,aspect_ratio)
+training.data.som = scale(target.movie.data.som)
+som.movie = som(training.data.som, grid = somgrid(15, 15, "hexagonal"), rlen=100, alpha=c(0.05, 0.01))
+summary(som.movie)
+
+coolBlueHotRed <- function(n, alpha = 1) {
+        rainbow(n, end=4/6, alpha=alpha)[n:1]
+}
+
+#plot the iteration of the algrithms
+par(mfrow = c(1,1))
+plot(som.movie, type="changes")
+
+#plot the hexagon count and neighbour distance in SOM map
+#par(mfrow = c(1,2))
+#plot(som.movie, type="counts")
+#plot(som.movie, type="dist.neighbours")
+
+#show different features in 9 plots using SOM map
+pretty_palette = c("#1f77b4", '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2')
+par(mfrow = c(3,3))
+for (i in 1:9){
+        plot(som.movie, type = "property", property = som.movie$codes[,i], main=colnames(som.movie$data)[i], palette.name=coolBlueHotRed)
+}
+
+#show all the features in one plot using SOM map
+par(mfrow = c(1,1))
+plot(som.movie, type="codes",palette.name = coolBlueHotRed)
+
+#use hierarchical clustering to cluster the codebook vectors
+par(mfrow = c(1,1))
+pretty_palette = c("#1f77b4", '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2')
+som.cluster = cutree(hclust(dist(som.movie$codes)), 6)
+plot(som.movie, type="mapping", bgcol = pretty_palette[som.cluster], main = "Clusters")
+add.cluster.boundaries(som.movie, som.cluster)
+
+#Ideally, the clusters found are contiguous on the map surface. However, this may not be the case, depending on the underlying distribution of variables. To obtain contiguous cluster, a hierachical clustering algorithm can be used that only combines nodes that are similar AND beside each other on the SOM grid. 
+
+# If you want to see each circle(each grid)'s representative values for all nine dimensions:
+#(Numbering start from left-bottom one to right)
+# ...              225
+# ...
+# 16, 17, ...      30
+# 1,  2,  3, ..... 15
+
+#####purple#####
+som.movie$codes[96,]
+# movies which have the most facebook likes: The Dark Knight Rises, Interstellar, Inception
+movie.data$movie_title[(som.movie$unit.classif == 96)]
+
+```
+Cluster Feature Summary:
+Red Cluster
+High cast total Facebook likes
+Orange Cluster
+High IMDb Score
+Purple Cluster
+High number of users for review; High gross; High number of voted users
+Brown Cluster
+High movie Facebook likes; High director Facebook likes; High IMDb score
+Green Cluster
+High director Facebook likes
+
+4. Assumption Check For Linear Model 
+```{r}
+vif(step)
+resid_OLS<-resid(step)
+hist(resid_OLS,col=blues9[7])
+qqnorm(resid_OLS,col=blues9[9])
+qqline(resid_OLS,col="red")
+shapiro.test(resid_OLS)
+ncvTest(step)
+durbinWatsonTest(step)
+```
+
+
+
+
+
+####the reason we remove genre here for clustering
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file).
